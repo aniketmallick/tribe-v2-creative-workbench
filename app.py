@@ -49,6 +49,81 @@ def _default_summary(message: str = "Run a comparison to see summary stats.") ->
     return {"message": message}
 
 
+def _slider_config(timesteps: int) -> dict[str, Any]:
+    if timesteps <= 0:
+        return {"minimum": 0, "maximum": 0, "value": 0, "step": 1, "interactive": False}
+    return {
+        "minimum": 0,
+        "maximum": timesteps - 1,
+        "value": 0,
+        "step": 1,
+        "interactive": True,
+    }
+
+
+def _resolve_reference_video(path_like: Any) -> str | None:
+    if path_like is None:
+        return None
+
+    if not isinstance(path_like, (str, Path)):
+        raise ValueError("Demo video path must be a string or pathlib.Path.")
+
+    resolved = Path(path_like).expanduser().resolve()
+    if not resolved.exists() or not resolved.is_file():
+        raise ValueError(f"Demo video path does not exist: {resolved}")
+    return str(resolved)
+
+
+def _initialize_demo_data(demo_data: dict[str, Any]) -> dict[str, Any]:
+    pred_a = _validate_prediction_array(demo_data.get("pred_a"), label="Demo Ad A")
+    pred_b = _validate_prediction_array(demo_data.get("pred_b"), label="Demo Ad B")
+    diff = _validate_prediction_array(demo_data.get("diff"), label="Demo Difference")
+
+    if pred_a.shape != pred_b.shape:
+        raise ValueError(
+            "Invalid demo data: pred_a and pred_b must have identical shapes, "
+            f"got {pred_a.shape} vs {pred_b.shape}."
+        )
+    if diff.shape != pred_a.shape:
+        raise ValueError(
+            "Invalid demo data: diff must match pred_a/pred_b shape, "
+            f"got diff={diff.shape}, pred={pred_a.shape}."
+        )
+
+    timesteps = int(diff.shape[0])
+    if timesteps <= 0:
+        raise ValueError("Invalid demo data: arrays must contain at least one timestep.")
+
+    fig_a, fig_b, fig_diff = viz.render_comparison(
+        pred_a=pred_a,
+        pred_b=pred_b,
+        diff=diff,
+        time_step=0,
+    )
+
+    metadata = dict(demo_data.get("metadata") or {})
+    metadata.setdefault("timesteps", timesteps)
+    metadata.setdefault("aligned_shape", list(diff.shape))
+    summary = _compute_summary_stats(diff)
+    if metadata:
+        summary = {"demo_metadata": metadata, **summary}
+
+    return {
+        "status": "Demo mode: loaded cached sample predictions.",
+        "pred_a": pred_a,
+        "pred_b": pred_b,
+        "diff": diff,
+        "metadata": metadata,
+        "slider": _slider_config(timesteps),
+        "fig_a": fig_a,
+        "fig_b": fig_b,
+        "fig_diff": fig_diff,
+        "summary": summary,
+        "video_a": _resolve_reference_video(demo_data.get("video_a")),
+        "video_b": _resolve_reference_video(demo_data.get("video_b")),
+    }
+
+
 def _coerce_upload_path(upload: Any) -> str | Path | None:
     if isinstance(upload, (str, Path)):
         return upload
@@ -261,59 +336,81 @@ def update_time_step(
         raise gr.Error(f"Failed to render comparison plots: {exc}") from exc
 
 
-def build_app() -> gr.Blocks:
+def build_app(demo_data: dict[str, Any] | None = None) -> gr.Blocks:
+    demo_mode = demo_data is not None
+    initial = _initialize_demo_data(demo_data) if demo_mode else None
+    initial_slider = initial["slider"] if initial else _slider_config(0)
+
     with gr.Blocks(title="TRIBE v2 Comparison MVP") as demo:
         gr.Markdown("## TRIBE v2 Comparison MVP")
+        if demo_mode:
+            gr.Markdown(
+                "Demo mode is active. Cached predictions are preloaded and upload/inference controls are disabled."
+            )
 
         with gr.Row():
-            ad_a_input = gr.Video(label="Ad A", sources=["upload"])
-            ad_b_input = gr.Video(label="Ad B", sources=["upload"])
+            ad_a_input = gr.Video(
+                label="Ad A (reference only)" if demo_mode else "Ad A",
+                sources=["upload"],
+                value=initial["video_a"] if initial else None,
+                interactive=not demo_mode,
+            )
+            ad_b_input = gr.Video(
+                label="Ad B (reference only)" if demo_mode else "Ad B",
+                sources=["upload"],
+                value=initial["video_b"] if initial else None,
+                interactive=not demo_mode,
+            )
 
-        run_button = gr.Button("Run Comparison", variant="primary")
+        run_button = gr.Button("Run Comparison", variant="primary", interactive=not demo_mode)
         status_box = gr.Textbox(
             label="Status / Progress",
             lines=2,
-            value="Upload two videos and click Run Comparison.",
+            value=initial["status"] if initial else "Upload two videos and click Run Comparison.",
             interactive=False,
         )
 
         time_slider = gr.Slider(
             label="time_step",
-            minimum=0,
-            maximum=0,
-            value=0,
-            step=1,
-            interactive=False,
+            minimum=initial_slider["minimum"],
+            maximum=initial_slider["maximum"],
+            value=initial_slider["value"],
+            step=initial_slider["step"],
+            interactive=initial_slider["interactive"],
         )
 
         with gr.Row():
-            plot_a = gr.Plot(label="Ad A")
-            plot_b = gr.Plot(label="Ad B")
-            plot_diff = gr.Plot(label="Difference")
+            plot_a = gr.Plot(label="Ad A", value=initial["fig_a"] if initial else None)
+            plot_b = gr.Plot(label="Ad B", value=initial["fig_b"] if initial else None)
+            plot_diff = gr.Plot(label="Difference", value=initial["fig_diff"] if initial else None)
 
-        summary_stats = gr.JSON(label="Summary Stats", value=_default_summary())
-
-        pred_a_state = gr.State(value=None)
-        pred_b_state = gr.State(value=None)
-        diff_state = gr.State(value=None)
-        metadata_state = gr.State(value={})
-
-        run_button.click(
-            fn=run_comparison,
-            inputs=[ad_a_input, ad_b_input],
-            outputs=[
-                status_box,
-                pred_a_state,
-                pred_b_state,
-                diff_state,
-                metadata_state,
-                time_slider,
-                plot_a,
-                plot_b,
-                plot_diff,
-                summary_stats,
-            ],
+        summary_stats = gr.JSON(
+            label="Summary Stats",
+            value=initial["summary"] if initial else _default_summary(),
         )
+
+        pred_a_state = gr.State(value=initial["pred_a"] if initial else None)
+        pred_b_state = gr.State(value=initial["pred_b"] if initial else None)
+        diff_state = gr.State(value=initial["diff"] if initial else None)
+        metadata_state = gr.State(value=initial["metadata"] if initial else {})
+
+        if not demo_mode:
+            run_button.click(
+                fn=run_comparison,
+                inputs=[ad_a_input, ad_b_input],
+                outputs=[
+                    status_box,
+                    pred_a_state,
+                    pred_b_state,
+                    diff_state,
+                    metadata_state,
+                    time_slider,
+                    plot_a,
+                    plot_b,
+                    plot_diff,
+                    summary_stats,
+                ],
+            )
 
         time_slider.change(
             fn=update_time_step,
