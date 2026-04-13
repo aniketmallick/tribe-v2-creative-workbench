@@ -23,6 +23,7 @@ cache/
 outputs/
 artifacts/
 data/
+*.npy
 *.ckpt
 *.pt
 *.pth
