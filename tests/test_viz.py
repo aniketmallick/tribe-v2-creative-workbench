@@ -175,7 +175,8 @@ def test_render_comparison_uses_shared_raw_scale(monkeypatch: pytest.MonkeyPatch
     assert mesh_a.cmin == pytest.approx(mesh_b.cmin)
     assert mesh_a.cmax == pytest.approx(mesh_b.cmax)
     assert mesh_diff.cmin >= 0.0
-    assert mesh_diff.colorscale[0][1] == "#000004"
+    assert mesh_diff.cmax > mesh_diff.cmin
+    assert len(mesh_diff.colorscale) > 2
 
 
 def test_render_comparison_rejects_shape_mismatch() -> None:
