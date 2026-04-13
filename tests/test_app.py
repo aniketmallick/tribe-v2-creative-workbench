@@ -16,9 +16,48 @@ def _predictions(timesteps: int, value: float) -> np.ndarray:
 
 
 def test_app_object_and_builder_exist() -> None:
-    assert isinstance(app.app, gr.Blocks)
     built = app.build_app()
     assert isinstance(built, gr.Blocks)
+
+
+def test_build_app_supports_demo_data(monkeypatch: pytest.MonkeyPatch) -> None:
+    pred_a = _predictions(2, 0.5)
+    pred_b = _predictions(2, 1.5)
+    diff = np.abs(pred_a - pred_b)
+    called = {"time_step": None}
+
+    class DummyPlot:
+        __module__ = "plotly.graph_objects"
+
+        def to_json(self) -> str:
+            return "{}"
+
+    def fake_render_comparison(pred_a, pred_b, diff, time_step):
+        called["time_step"] = time_step
+        return DummyPlot(), DummyPlot(), DummyPlot()
+
+    monkeypatch.setattr(app.viz, "render_comparison", fake_render_comparison)
+
+    built = app.build_app(
+        demo_data={
+            "pred_a": pred_a,
+            "pred_b": pred_b,
+            "diff": diff,
+            "metadata": {"source": "sample_data"},
+        }
+    )
+
+    assert isinstance(built, gr.Blocks)
+    assert called["time_step"] == 0
+
+
+def test_initialize_demo_data_rejects_shape_mismatch() -> None:
+    pred_a = _predictions(2, 0.0)
+    pred_b = _predictions(3, 1.0)
+    diff = _predictions(2, 1.0)
+
+    with pytest.raises(ValueError, match="must have identical shapes"):
+        app._initialize_demo_data({"pred_a": pred_a, "pred_b": pred_b, "diff": diff})
 
 
 def test_validate_uploaded_video_accepts_path_and_video_dict(tmp_path: Path) -> None:
