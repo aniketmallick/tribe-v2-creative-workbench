@@ -16,7 +16,6 @@ def _predictions(timesteps: int, value: float) -> np.ndarray:
 
 
 def test_app_object_and_builder_exist() -> None:
-    assert isinstance(app.app, gr.Blocks)
     built = app.build_app()
     assert isinstance(built, gr.Blocks)
 

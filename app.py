@@ -421,7 +421,5 @@ def build_app(demo_data: dict[str, Any] | None = None) -> gr.Blocks:
     return demo.queue()
 
 
-app = build_app()
-
 if __name__ == "__main__":
-    app.launch()
+    build_app().launch()

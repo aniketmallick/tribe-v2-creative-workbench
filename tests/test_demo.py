@@ -26,6 +26,15 @@ def test_load_demo_assets_missing_files(tmp_path: Path) -> None:
         demo.load_demo_assets(tmp_path)
 
 
+def test_find_missing_required_assets_reports_expected_files(tmp_path: Path) -> None:
+    missing_before = demo.find_missing_required_assets(tmp_path)
+    assert missing_before == ["pred_A.npy", "pred_B.npy", "diff.npy"]
+
+    _write_demo_arrays(tmp_path)
+    missing_after = demo.find_missing_required_assets(tmp_path)
+    assert missing_after == []
+
+
 def test_load_demo_assets_success_with_optional_files(tmp_path: Path) -> None:
     _write_demo_arrays(tmp_path)
     (tmp_path / "metadata.json").write_text(
@@ -45,13 +54,13 @@ def test_load_demo_assets_success_with_optional_files(tmp_path: Path) -> None:
     assert Path(assets["video_b"]).name == "ad_b.mp4"
 
 
-def test_main_returns_one_when_assets_missing(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    original_sample_dir = demo.DEFAULT_SAMPLE_DIR
-    demo.DEFAULT_SAMPLE_DIR = tmp_path
-    try:
-        exit_code = demo.main()
-    finally:
-        demo.DEFAULT_SAMPLE_DIR = original_sample_dir
+def test_main_returns_one_when_assets_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(demo, "DEFAULT_SAMPLE_DIR", tmp_path)
+    exit_code = demo.main()
 
     captured = capsys.readouterr()
     assert exit_code == 1
@@ -60,8 +69,7 @@ def test_main_returns_one_when_assets_missing(tmp_path: Path, capsys: pytest.Cap
 
 def test_main_builds_and_launches_when_assets_exist(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _write_demo_arrays(tmp_path)
-    original_sample_dir = demo.DEFAULT_SAMPLE_DIR
-    demo.DEFAULT_SAMPLE_DIR = tmp_path
+    monkeypatch.setattr(demo, "DEFAULT_SAMPLE_DIR", tmp_path)
 
     launched = {"called": False}
 
@@ -74,10 +82,7 @@ def test_main_builds_and_launches_when_assets_exist(monkeypatch: pytest.MonkeyPa
         return DummyApp()
 
     monkeypatch.setattr(demo.comparison_app, "build_app", fake_build_app)
-    try:
-        exit_code = demo.main()
-    finally:
-        demo.DEFAULT_SAMPLE_DIR = original_sample_dir
+    exit_code = demo.main()
 
     assert exit_code == 0
     assert launched["called"] is True
