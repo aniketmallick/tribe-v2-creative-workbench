@@ -140,6 +140,8 @@ def load_fsaverage5() -> dict[str, Any]:
             f"({left_vertices} left + {right_vertices} right)."
         )
 
+    # Assumption: TRIBE v2 cortical outputs are ordered [left hemisphere, right hemisphere].
+    # Validate this ordering against upstream TRIBE references if rendering looks hemisphere-swapped.
     combined_coords = np_mod.vstack([left_coords, right_coords])
     combined_faces = np_mod.vstack([left_faces, right_faces + left_vertices])
 
@@ -284,17 +286,10 @@ def render_comparison(
     raw_slice = np_mod.concatenate([pred_a_np[time_step], pred_b_np[time_step]])
     raw_vmin, raw_vmax = _resolve_color_range(raw_slice, vmin=None, vmax=None)
 
+    # diff is expected to be abs-difference magnitudes from compare.py (non-negative).
     diff_slice = np_mod.asarray(diff_np[time_step], dtype=float)
-    diff_min = float(np_mod.nanmin(diff_slice))
-    diff_max = float(np_mod.nanmax(diff_slice))
-
-    if diff_min < 0.0 < diff_max:
-        diff_limit = max(abs(diff_min), abs(diff_max))
-        diff_vmin, diff_vmax = -diff_limit, diff_limit
-        diff_colorscale = "RdBu"
-    else:
-        diff_vmin, diff_vmax = _resolve_color_range(diff_slice, vmin=None, vmax=None)
-        diff_colorscale = "Inferno"
+    diff_vmin, diff_vmax = _resolve_color_range(diff_slice, vmin=None, vmax=None)
+    diff_colorscale = "Inferno"
 
     fig_a = render_brain(
         pred_a_np,
