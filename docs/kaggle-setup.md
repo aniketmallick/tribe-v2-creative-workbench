@@ -17,6 +17,8 @@ Add a Kaggle secret named `HF_TOKEN`.
 ```python
 %pip install -q --upgrade pip setuptools wheel
 %pip install -q --no-cache-dir -r requirements.inference.txt
+# Optional: visualization stack for Prompt 2 (`viz.py`)
+%pip install -q --no-cache-dir -r requirements.viz.txt
 ```
 
 If `requirements.inference.txt` is not present inside the notebook environment, paste the requirements directly from the repo.

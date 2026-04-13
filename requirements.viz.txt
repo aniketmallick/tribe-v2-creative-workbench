@@ -1,0 +1,7 @@
+nibabel
+matplotlib
+seaborn
+colorcet
+nilearn
+pyvista
+scikit-image

@@ -18,14 +18,16 @@ Use a fresh runtime. Do not debug this in a polluted notebook session.
   "numpy==2.2.6" \
   "scipy==1.15.3" \
   "scikit-learn==1.6.1" \
+  "huggingface_hub" \
   "jedi>=0.16" \
   "wrapt"
 
 %pip install -q --no-cache-dir \
   "git+https://github.com/facebookresearch/tribev2.git"
 
+# Optional: visualization stack for Prompt 2 (`viz.py`)
 %pip install -q --no-cache-dir \
-  nibabel matplotlib seaborn colorcet nilearn pyvista scikit-image huggingface_hub
+  nibabel matplotlib seaborn colorcet nilearn pyvista scikit-image
 ```
 
 ## Restart
