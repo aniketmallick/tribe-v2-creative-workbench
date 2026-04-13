@@ -1,17 +1,12 @@
 torch==2.6.0
 torchvision==0.21.0
 torchaudio==2.6.0
+# Validated with TRIBE v2 notebook stack.
+# Colab/Kaggle may still show resolver warnings for preinstalled tensorflow/numba packages.
 numpy==2.2.6
 scipy==1.15.3
 scikit-learn==1.6.1
 jedi>=0.16
 wrapt
-nibabel
-matplotlib
-seaborn
-colorcet
-nilearn
-pyvista
-scikit-image
 huggingface_hub
 git+https://github.com/facebookresearch/tribev2.git

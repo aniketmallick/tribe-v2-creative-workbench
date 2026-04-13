@@ -21,6 +21,13 @@ if TYPE_CHECKING:
 
 EXPECTED_VERTICES = 20_484
 MODEL_ID = "facebook/tribev2"
+__all__ = [
+    "load_model",
+    "run_video_inference",
+    "align_predictions",
+    "compute_difference",
+    "save_outputs",
+]
 
 
 def _require_numpy() -> Any:
@@ -50,10 +57,6 @@ def _validate_cortical_array(array: np.ndarray, label: str) -> None:
         raise ValueError(
             f"{label} must have {EXPECTED_VERTICES} vertices in axis 1, got {array.shape}."
         )
-
-
-def _validate_predictions(predictions: np.ndarray, label: str) -> None:
-    _validate_cortical_array(predictions, label)
 
 
 def _coerce_float(value: Any) -> float | None:
@@ -121,16 +124,16 @@ def _segment_timing_rows(
 
 
 @lru_cache(maxsize=None)
-def _load_model_cached(cache_dir: str) -> "TribeModel":
+def _load_model_cached(cache_dir: str, model_id: str) -> "TribeModel":
     from tribev2.demo_utils import TribeModel
 
-    return TribeModel.from_pretrained(MODEL_ID, cache_folder=Path(cache_dir))
+    return TribeModel.from_pretrained(model_id, cache_folder=Path(cache_dir))
 
 
-def load_model(cache_dir: str | Path = "./cache") -> "TribeModel":
+def load_model(cache_dir: str | Path = "./cache", model_id: str = MODEL_ID) -> "TribeModel":
     cache_path = Path(cache_dir).expanduser().resolve()
     cache_path.mkdir(parents=True, exist_ok=True)
-    return _load_model_cached(str(cache_path))
+    return _load_model_cached(str(cache_path), model_id)
 
 
 def run_video_inference(model: Any, video_path: str | Path) -> tuple[np.ndarray, object]:
@@ -167,14 +170,12 @@ def align_predictions(
 def compute_difference(
     pred_a: np.ndarray,
     pred_b: np.ndarray,
-    validate: bool = True,
 ) -> np.ndarray:
     np_mod = _require_numpy()
     pred_a_np = np_mod.asarray(pred_a)
     pred_b_np = np_mod.asarray(pred_b)
-    if validate:
-        _validate_cortical_array(pred_a_np, label="pred_a")
-        _validate_cortical_array(pred_b_np, label="pred_b")
+    _validate_cortical_array(pred_a_np, label="pred_a")
+    _validate_cortical_array(pred_b_np, label="pred_b")
     if pred_a_np.shape != pred_b_np.shape:
         raise ValueError(f"Shape mismatch: pred_a {pred_a_np.shape} vs pred_b {pred_b_np.shape}.")
 
@@ -187,6 +188,7 @@ def save_outputs(
     pred_b: np.ndarray,
     diff: np.ndarray,
     metadata: dict[str, Any],
+    *,
     segments_a: object | None = None,
     segments_b: object | None = None,
     aligned_t: int | None = None,
@@ -227,8 +229,10 @@ def save_outputs(
         json.dump({"segment_count": len(segment_rows_b), "segments": segment_rows_b}, f, indent=2)
 
     metadata_payload = dict(metadata)
-    metadata_payload.setdefault("diff_mean", float(np_mod.mean(diff_np)))
-    metadata_payload.setdefault("diff_max", float(np_mod.max(diff_np)))
+    if "diff_mean" not in metadata_payload:
+        metadata_payload["diff_mean"] = float(np_mod.mean(diff_np))
+    if "diff_max" not in metadata_payload:
+        metadata_payload["diff_max"] = float(np_mod.max(diff_np))
     metadata_payload["segments_a_count"] = len(segment_rows_a)
     metadata_payload["segments_b_count"] = len(segment_rows_b)
     metadata_payload["segment_fields"] = ["index", "start", "duration"]
@@ -261,6 +265,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default="./cache",
         help="Cache directory for model files (default: ./cache).",
     )
+    parser.add_argument(
+        "--model-id",
+        type=str,
+        default=MODEL_ID,
+        help=f"Hugging Face model ID to load (default: {MODEL_ID}).",
+    )
     return parser
 
 
@@ -271,7 +281,7 @@ def main() -> None:
     video_a_path = _validate_video_path(args.video_a)
     video_b_path = _validate_video_path(args.video_b)
 
-    model = load_model(cache_dir=args.cache_dir)
+    model = load_model(cache_dir=args.cache_dir, model_id=args.model_id)
 
     pred_a, segments_a = run_video_inference(model=model, video_path=video_a_path)
     pred_b, segments_b = run_video_inference(model=model, video_path=video_b_path)
@@ -280,13 +290,14 @@ def main() -> None:
     original_shape_b = list(pred_b.shape)
 
     aligned_a, aligned_b, aligned_t = align_predictions(pred_a, pred_b, mode="truncate")
-    diff = compute_difference(aligned_a, aligned_b, validate=False)
+    diff = compute_difference(aligned_a, aligned_b)
 
     diff_mean = float(np_mod.mean(diff))
     diff_max = float(np_mod.max(diff))
     aligned_shape = list(diff.shape)
 
     metadata = {
+        "model_id": args.model_id,
         "video_a_path": str(video_a_path),
         "video_b_path": str(video_b_path),
         "original_shape_a": original_shape_a,
