@@ -49,12 +49,16 @@ def load_demo_assets(sample_dir: str | Path = DEFAULT_SAMPLE_DIR) -> dict[str, A
         "metadata": metadata,
     }
 
-    ad_a_path = sample_path / "ad_a.mp4"
-    ad_b_path = sample_path / "ad_b.mp4"
-    if ad_a_path.is_file():
-        data["video_a"] = ad_a_path
-    if ad_b_path.is_file():
-        data["video_b"] = ad_b_path
+    for video_key, filename in (("video_a", "ad_a.mp4"), ("video_b", "ad_b.mp4")):
+        p = sample_path / filename
+        if p.is_file():
+            data[video_key] = p
+
+    for timing_key, filename in (("timing_a", "timing_a.json"), ("timing_b", "timing_b.json")):
+        p = sample_path / filename
+        if p.is_file():
+            with p.open("r", encoding="utf-8") as f:
+                data[timing_key] = json.load(f)
 
     return data
 

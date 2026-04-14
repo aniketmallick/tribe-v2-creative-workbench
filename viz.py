@@ -214,7 +214,7 @@ def render_brain(
         cmax=resolved_vmax,
         showscale=True,
         colorbar={
-            "title": {"text": "Value", "font": {"color": "#F5F5F5"}},
+            "title": {"text": "Cortical Response (a.u.)", "font": {"color": "#F5F5F5"}},
             "len": 0.85,
             "thickness": 16,
             "tickfont": {"color": "#F5F5F5"},
@@ -262,8 +262,18 @@ def render_comparison(
     pred_b: np.ndarray,
     diff: np.ndarray,
     time_step: int,
+    pred_vmin: float | None = None,
+    pred_vmax: float | None = None,
+    diff_vmin: float | None = None,
+    diff_vmax: float | None = None,
 ) -> tuple["go_typing.Figure", "go_typing.Figure", "go_typing.Figure"]:
-    """Render Ad A, Ad B, and Difference figures for the same time step."""
+    """Render Ad A, Ad B, and Difference figures for the same time step.
+
+    Pass ``pred_vmin``/``pred_vmax`` and ``diff_vmin``/``diff_vmax`` to lock the
+    colour scale globally (e.g. computed across all timesteps) so frames are
+    directly comparable.  When omitted, the range is derived from the slice at
+    ``time_step``.
+    """
     np_mod = _require_numpy()
 
     pred_a_np = np_mod.asarray(pred_a)
@@ -283,12 +293,14 @@ def render_comparison(
 
     _validate_time_step(time_step, pred_a_np.shape[0])
 
-    raw_slice = np_mod.concatenate([pred_a_np[time_step], pred_b_np[time_step]])
-    raw_vmin, raw_vmax = _resolve_color_range(raw_slice, vmin=None, vmax=None)
+    if pred_vmin is None or pred_vmax is None:
+        raw_slice = np_mod.concatenate([pred_a_np[time_step], pred_b_np[time_step]])
+        pred_vmin, pred_vmax = _resolve_color_range(raw_slice, vmin=pred_vmin, vmax=pred_vmax)
 
-    # diff is expected to be abs-difference magnitudes from compare.py (non-negative).
-    diff_slice = np_mod.asarray(diff_np[time_step], dtype=float)
-    diff_vmin, diff_vmax = _resolve_color_range(diff_slice, vmin=None, vmax=None)
+    if diff_vmin is None or diff_vmax is None:
+        diff_slice = np_mod.asarray(diff_np[time_step], dtype=float)
+        diff_vmin, diff_vmax = _resolve_color_range(diff_slice, vmin=diff_vmin, vmax=diff_vmax)
+
     diff_colorscale = "Inferno"
 
     fig_a = render_brain(
@@ -296,16 +308,16 @@ def render_comparison(
         time_step=time_step,
         title=f"Ad A (t={time_step})",
         colorscale="Viridis",
-        vmin=raw_vmin,
-        vmax=raw_vmax,
+        vmin=pred_vmin,
+        vmax=pred_vmax,
     )
     fig_b = render_brain(
         pred_b_np,
         time_step=time_step,
         title=f"Ad B (t={time_step})",
         colorscale="Viridis",
-        vmin=raw_vmin,
-        vmax=raw_vmax,
+        vmin=pred_vmin,
+        vmax=pred_vmax,
     )
     fig_diff = render_brain(
         diff_np,
