@@ -1,80 +1,117 @@
-# TRIBE v2 Creative Workbench
+# TRIBE v2 Comparison Workbench
 
-Open-source starter repo for experimenting with Meta's `TRIBE v2` model on ad creatives, videos, audio, and text.
+Compare how different video stimuli activate the brain using Meta's TRIBE v2.
 
-## What This Repo Is
+![Demo](assets/demo.gif)
+<!-- TODO: replace with an actual app capture or short screen recording. -->
 
-This repo is a clean public starting point for:
+## Why this exists
 
-- running `TRIBE v2` in Colab or Kaggle
-- comparing two creative variants
-- turning raw cortical predictions into something usable for product experiments
-
-## What TRIBE v2 Actually Does
-
-`TRIBE v2` predicts average-subject fMRI-like cortical activity from `video`, `audio`, or `text` inputs.
-
-This is useful for:
-
-- comparing two ad cuts
-- testing narration vs no narration
-- testing subtitle variants
-- exploring which modalities dominate predicted cortical response over time
-
-## Current Scope
-
-This repo currently contains:
-
-- setup instructions for `Colab` and `Kaggle`
-- a stable dependency set for notebook-based inference
-- utility scripts for environment checks
-- a public repo structure you can build on
-
-## Project Roadmap
-
-1. Get stable inference running in Colab and Kaggle.
-2. Add a comparison notebook for `creative A vs creative B`.
-3. Build a simple app viewer with synced brain activity and stimulus playback.
-4. Add ROI summaries and difference views.
+This project compares two video stimuli, runs TRIBE v2 on both, and visualizes each cortical prediction plus a time-varying difference map. It is intended for research, exploration, and creative-analysis workflows; it is not a medical product and must not be used for diagnosis or treatment.
 
 ## Quick Start
 
-### Kaggle
+1. Clone the repo.
 
-1. Create a notebook.
-2. Enable `Internet`.
-3. Use `GPU T4 x2`, not `P100`.
-4. Add a Kaggle secret named `HF_TOKEN`.
-5. Follow [docs/kaggle-setup.md](docs/kaggle-setup.md).
+```bash
+git clone https://github.com/aniketmallick/tribe-v2-creative-workbench.git
+cd tribe-v2-creative-workbench
+```
 
-### Colab
+2. Install dependencies.
 
-1. Open a fresh notebook.
-2. Switch to a `T4 GPU`.
-3. Make sure your Hugging Face token is ready.
-4. Follow [docs/colab-setup.md](docs/colab-setup.md).
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
 
-## License Boundary
+`requirements.txt` is the canonical entrypoint and includes `requirements.inference.txt` + `requirements.viz.txt`.
 
-The code in this repo is released under `MIT`.
+3. Run demo mode.
 
-Important:
+```bash
+python demo.py
+```
 
-- `TRIBE v2` model weights are not owned by this repo.
-- The released `facebook/tribev2` checkpoint is licensed separately.
-- At the time of writing, the model card lists `CC-BY-NC-4.0`.
+## Full Usage
 
-Do not pretend this repo grants commercial rights to the model weights. It does not.
+### Dependency profiles
 
-Official model references:
+- `requirements.txt`: full runtime for demo mode, app mode, inference, and visualization.
+- `requirements.inference.txt`: inference stack only (TRIBE v2 + PyTorch + scientific deps).
+- `requirements.viz.txt`: visualization stack only (`nilearn`, `plotly`).
 
-- [TRIBE v2 GitHub](https://github.com/facebookresearch/tribev2)
-- [TRIBE v2 Hugging Face](https://huggingface.co/facebook/tribev2)
+### Run demo mode
+
+`demo.py` loads cached arrays from `sample_data/` and launches the UI without live model inference.
+
+```bash
+python demo.py
+```
+
+If required files are missing, the script prints exactly which files to create.
+
+### Run the full app
+
+`app.py` launches the comparison UI with upload inputs and live TRIBE v2 inference.
+
+```bash
+python app.py
+```
+
+Upload two videos and click **Run Comparison**.
+
+### Use your own videos
+
+You can use your own `.mp4` inputs either in the app (upload both files) or from the CLI.
+
+```bash
+python compare.py /path/to/ad_a.mp4 /path/to/ad_b.mp4 --output-dir outputs
+```
+
+### Run `compare.py` directly from the CLI
+
+`compare.py` saves aligned predictions, difference arrays, and metadata.
+
+```bash
+python compare.py /path/to/ad_a.mp4 /path/to/ad_b.mp4 \
+  --output-dir outputs \
+  --cache-dir ./cache \
+  --model-id facebook/tribev2
+```
+
+Optional: render saved outputs as HTML brain surfaces.
+
+```bash
+python viz.py --pred-a outputs/pred_A.npy --pred-b outputs/pred_B.npy --diff outputs/diff.npy --time-step 0
+```
+
+## Repo structure
+
+- `compare.py`: TRIBE v2 loading, per-video inference, alignment, difference computation, and output serialization.
+- `viz.py`: fsaverage5 surface loading and Plotly rendering for Ad A, Ad B, and difference maps.
+- `app.py`: Gradio app for uploading two videos and inspecting time-step differences interactively.
+- `demo.py`: cached demo launcher that boots the app from files in `sample_data/`.
+- `sample_data/`: optional lightweight demo assets (`pred_A.npy`, `pred_B.npy`, `diff.npy`, optional metadata/videos).
+
+## How it works
+
+- TRIBE v2 converts stimuli into cortical predictions on the fsaverage5 surface.
+- This project aligns two prediction sequences and computes a time-varying difference map.
+- The UI lets users inspect those differences interactively.
+
+## License
+
+This project's code is licensed under MIT.
+TRIBE v2 model weights are property of Meta and licensed under CC-BY-NC-4.0.
+This project does not distribute model weights — users must fetch them from
+HuggingFace (facebook/tribev2). The text encoder path requires gated access
+to Llama 3.2-3B.
+
+## Acknowledgments
+
+- [TRIBE v2 GitHub repository](https://github.com/facebookresearch/tribev2)
+- [Hugging Face model card](https://huggingface.co/facebook/tribev2)
 - [Meta demo page](https://aidemos.atmeta.com/tribev2)
-
-## Next Build Targets
-
-- `notebooks/creative_compare.ipynb`
-- `app/` interactive viewer
-- ROI-level summaries
-- exportable comparison reports
+- [Paper: A Foundation Model of Vision, Audition, and Language for In-Silico Neuroscience](https://ai.meta.com/research/publications/a-foundation-model-of-vision-audition-and-language-for-in-silico-neuroscience/)

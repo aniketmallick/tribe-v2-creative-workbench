@@ -1,0 +1,8 @@
+# Canonical runtime entrypoint for this repo:
+# - inference stack (TRIBE v2 + torch + scientific deps)
+# - visualization stack (nilearn + plotly)
+-r requirements.inference.txt
+-r requirements.viz.txt
+
+# App runtime
+gradio==6.12.0

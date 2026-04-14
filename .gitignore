@@ -7,32 +7,39 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 
-# Environments
+# Environments and secrets
 .venv/
 venv/
 env/
-
-# Jupyter
-.ipynb_checkpoints/
-
-# OS
-.DS_Store
-
-# Local data and caches
-cache/
-outputs/
-artifacts/
-data/
-*.npy
-*.ckpt
-*.pt
-*.pth
-
-# Secrets
 .env
 .env.*
 secrets.toml
 
-# IDE
+# Jupyter
+.ipynb_checkpoints/
+/tribe_demo.ipynb
+/TRIBE v2 Comparison Workbench*Codex*.md
+
+# Local caches and outputs
+cache/
+outputs/
+artifacts/
+
+# Model checkpoints / heavy artifacts
+checkpoints/
+models/
+*.ckpt
+*.pt
+*.pth
+*.safetensors
+*.bin
+
+# Demo/generated scratch dirs (keep sample_data/*.npy trackable)
+sample_data/generated/
+sample_data/tmp/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
 .idea/
 .vscode/
