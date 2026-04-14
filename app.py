@@ -208,16 +208,35 @@ def _compute_summary_stats(diff: np.ndarray) -> dict[str, Any]:
 
 
 def _write_intensities_binary(path: Path, pred_a: np.ndarray, pred_b: np.ndarray, diff: np.ndarray) -> None:
-    """Write all frame intensities as flat float32 binary for zero-latency client-side updates.
+    """Write intensities + per-frame color scales as flat float32 binary.
 
-    Layout: [T: int32, N: int32, pred_a_flat: float32×T×N, pred_b_flat, diff_flat]
+    Layout:
+      [T: int32, N: int32]                          — 8 bytes header
+      [pred_a_flat: float32 × T×N]                  — intensity data
+      [pred_b_flat: float32 × T×N]
+      [diff_flat:   float32 × T×N]
+      [pred_vmin: float32 × T]                      — per-frame color scales
+      [pred_vmax: float32 × T]
+      [diff_vmin: float32 × T]
+      [diff_vmax: float32 × T]
     """
     T, N = int(pred_a.shape[0]), int(pred_a.shape[1])
+
+    # Per-frame color ranges matching viz.render_comparison's per-frame logic.
+    pred_vmin = np.minimum(pred_a.min(axis=1), pred_b.min(axis=1)).astype(np.float32)
+    pred_vmax = np.maximum(pred_a.max(axis=1), pred_b.max(axis=1)).astype(np.float32)
+    diff_vmin = diff.min(axis=1).astype(np.float32)
+    diff_vmax = diff.max(axis=1).astype(np.float32)
+
     with path.open("wb") as f:
         f.write(struct.pack("<2i", T, N))
         f.write(pred_a.astype(np.float32).tobytes())
         f.write(pred_b.astype(np.float32).tobytes())
         f.write(diff.astype(np.float32).tobytes())
+        f.write(pred_vmin.tobytes())
+        f.write(pred_vmax.tobytes())
+        f.write(diff_vmin.tobytes())
+        f.write(diff_vmax.tobytes())
 
 
 def update_timestamp_only(
@@ -382,7 +401,7 @@ def update_time_step(
     return (*figs, _timestamp_label(step, timing_a, timing_b))
 
 
-_file_server_port: int | None = None
+_file_servers: dict[str, int] = {}  # directory → port
 
 
 def _find_plotly_js() -> Path | None:
@@ -396,10 +415,14 @@ def _find_plotly_js() -> Path | None:
 
 
 def _start_video_file_server(directory: str, port: int = 7862) -> int:
-    """Start a background HTTP server to serve video files and plotly.min.js."""
-    global _file_server_port
-    if _file_server_port is not None:
-        return _file_server_port
+    """Start a per-directory background HTTP server. Returns the port used.
+
+    Each unique directory gets its own server so multiple demo sessions in the
+    same process don't cross-serve stale assets from the wrong folder.
+    """
+    canonical = str(Path(directory).expanduser().resolve())
+    if canonical in _file_servers:
+        return _file_servers[canonical]
 
     plotly_js_path = _find_plotly_js()
 
@@ -439,7 +462,7 @@ def _start_video_file_server(directory: str, port: int = 7862) -> int:
             continue
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
-        _file_server_port = candidate
+        _file_servers[canonical] = candidate
         return candidate
 
     raise RuntimeError(
@@ -454,14 +477,21 @@ def _make_show_step_js() -> str:
         "  window._tribeShowStep = function(step) {\n"
         "    const f = window._tribeFrm, P = window.Plotly;\n"
         "    if (!f || !P) return;\n"
-        "    const { T, N, data } = f;\n"
+        "    const { T, N, data, scales } = f;\n"
         "    if (step < 0 || step >= T) return;\n"
+        # scales layout: [pred_vmin×T, pred_vmax×T, diff_vmin×T, diff_vmax×T]
+        "    const pVmin = scales[step],       pVmax = scales[T + step];\n"
+        "    const dVmin = scales[2*T + step], dVmax = scales[3*T + step];\n"
         "    ['tribe-plot-a', 'tribe-plot-b', 'tribe-plot-diff'].forEach((id, p) => {\n"
         "      const div = document.querySelector('#' + id + ' .js-plotly-plot');\n"
         "      if (!div) return;\n"
         "      const off = p * T * N + step * N;\n"
-        "      P.update(div, { intensity: [data.subarray(off, off + N)] },\n"
-        "               { 'title.text': ['Ad A','Ad B','Difference'][p] + ' (t=' + step + ')' }, [0]);\n"
+        "      const vmin = p < 2 ? pVmin : dVmin;\n"
+        "      const vmax = p < 2 ? pVmax : dVmax;\n"
+        "      P.update(div,\n"
+        "        { intensity: [data.subarray(off, off + N)], cmin: vmin, cmax: vmax },\n"
+        "        { 'title.text': ['Ad A','Ad B','Difference'][p] + ' (t=' + step + ')' },\n"
+        "        [0]);\n"
         "    });\n"
         "    const t = window._tribeTiming;\n"
         "    const ta = t ? (t.a[step] ?? step) : step;\n"
@@ -489,8 +519,13 @@ def _init_js(port: int, timing_a: list[float], timing_b: list[float]) -> str:
         f"  fetch('http://127.0.0.1:{port}/intensities.bin')\n"
         "    .then(r => r.arrayBuffer())\n"
         "    .then(buf => {\n"
-        "      const h = new Int32Array(buf, 0, 2);\n"
-        "      window._tribeFrm = { T: h[0], N: h[1], data: new Float32Array(buf, 8) };\n"
+        "      const h = new Int32Array(buf, 0, 2), T = h[0], N = h[1];\n"
+        "      const dataLen = 3 * T * N;\n"
+        "      window._tribeFrm = {\n"
+        "        T, N,\n"
+        "        data:   new Float32Array(buf, 8, dataLen),\n"
+        "        scales: new Float32Array(buf, 8 + dataLen * 4, 4 * T),\n"
+        "      };\n"
         "    }).catch(e => console.warn('[tribe] init fetch:', e));\n"
         "  function _def() {\n"
         + _make_show_step_js()
@@ -533,8 +568,13 @@ def _play_js(port: int, timing_a: list[float], timing_b: list[float]) -> str:
         f"    : fetch('http://127.0.0.1:{port}/intensities.bin')\n"
         "        .then(r => r.arrayBuffer())\n"
         "        .then(buf => {\n"
-        "          const h = new Int32Array(buf, 0, 2);\n"
-        "          window._tribeFrm = { T: h[0], N: h[1], data: new Float32Array(buf, 8) };\n"
+        "          const h = new Int32Array(buf, 0, 2), T = h[0], N = h[1];\n"
+        "          const dataLen = 3 * T * N;\n"
+        "          window._tribeFrm = {\n"
+        "            T, N,\n"
+        "            data:   new Float32Array(buf, 8, dataLen),\n"
+        "            scales: new Float32Array(buf, 8 + dataLen * 4, 4 * T),\n"
+        "          };\n"
         f"          window._tribeTiming = {tp};\n"
         "        });\n"
         "\n"
