@@ -32,7 +32,7 @@ def test_build_app_supports_demo_data(monkeypatch: pytest.MonkeyPatch) -> None:
         def to_json(self) -> str:
             return "{}"
 
-    def fake_render_comparison(pred_a, pred_b, diff, time_step):
+    def fake_render_comparison(pred_a, pred_b, diff, time_step, **kwargs):
         called["time_step"] = time_step
         return DummyPlot(), DummyPlot(), DummyPlot()
 

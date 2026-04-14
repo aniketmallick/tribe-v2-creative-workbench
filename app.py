@@ -99,11 +99,23 @@ def _initialize_demo_data(demo_data: dict[str, Any]) -> dict[str, Any]:
     if timesteps <= 0:
         raise ValueError("Invalid demo data: arrays must contain at least one timestep.")
 
+    # Use the same robust global range for the initial render so t=0 and all
+    # subsequent client-side frames share a consistent colour scale.
+    pred_all = np.concatenate([pred_a.ravel(), pred_b.ravel()])
+    global_pred_vmin = float(np.percentile(pred_all, 1))
+    global_pred_vmax = float(np.percentile(pred_all, 99))
+    global_diff_vmin = float(np.percentile(diff.ravel(), 1))
+    global_diff_vmax = float(np.percentile(diff.ravel(), 99))
+
     fig_a, fig_b, fig_diff = viz.render_comparison(
         pred_a=pred_a,
         pred_b=pred_b,
         diff=diff,
         time_step=0,
+        pred_vmin=global_pred_vmin,
+        pred_vmax=global_pred_vmax,
+        diff_vmin=global_diff_vmin,
+        diff_vmax=global_diff_vmax,
     )
 
     metadata = dict(demo_data.get("metadata") or {})
@@ -222,11 +234,21 @@ def _write_intensities_binary(path: Path, pred_a: np.ndarray, pred_b: np.ndarray
     """
     T, N = int(pred_a.shape[0]), int(pred_a.shape[1])
 
-    # Per-frame color ranges matching viz.render_comparison's per-frame logic.
-    pred_vmin = np.minimum(pred_a.min(axis=1), pred_b.min(axis=1)).astype(np.float32)
-    pred_vmax = np.maximum(pred_a.max(axis=1), pred_b.max(axis=1)).astype(np.float32)
-    diff_vmin = diff.min(axis=1).astype(np.float32)
-    diff_vmax = diff.max(axis=1).astype(np.float32)
+    # Global robust range (1st–99th percentile across all frames) so the colour
+    # scale is fixed — high-activation frames look brighter than low-activation
+    # ones, making temporal variation visible.  Percentiles avoid the outlier
+    # compression that made np.min/max flatten the useful signal.
+    pred_all = np.concatenate([pred_a.ravel(), pred_b.ravel()])
+    pred_vmin_val = float(np.percentile(pred_all, 1))
+    pred_vmax_val = float(np.percentile(pred_all, 99))
+    diff_vmin_val = float(np.percentile(diff.ravel(), 1))
+    diff_vmax_val = float(np.percentile(diff.ravel(), 99))
+
+    # Broadcast scalar to per-frame arrays (same value every frame = fixed scale).
+    pred_vmin = np.full(T, pred_vmin_val, dtype=np.float32)
+    pred_vmax = np.full(T, pred_vmax_val, dtype=np.float32)
+    diff_vmin = np.full(T, diff_vmin_val, dtype=np.float32)
+    diff_vmax = np.full(T, diff_vmax_val, dtype=np.float32)
 
     with path.open("wb") as f:
         f.write(struct.pack("<2i", T, N))
