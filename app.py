@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import http.server
+import json
+import struct
+import threading
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any
@@ -61,6 +65,7 @@ def _slider_config(timesteps: int) -> dict[str, Any]:
     }
 
 
+
 def _resolve_reference_video(path_like: Any) -> str | None:
     if path_like is None:
         return None
@@ -94,11 +99,23 @@ def _initialize_demo_data(demo_data: dict[str, Any]) -> dict[str, Any]:
     if timesteps <= 0:
         raise ValueError("Invalid demo data: arrays must contain at least one timestep.")
 
+    # Use the same robust global range for the initial render so t=0 and all
+    # subsequent client-side frames share a consistent colour scale.
+    pred_all = np.concatenate([pred_a.ravel(), pred_b.ravel()])
+    global_pred_vmin = float(np.percentile(pred_all, 1))
+    global_pred_vmax = float(np.percentile(pred_all, 99))
+    global_diff_vmin = float(np.percentile(diff.ravel(), 1))
+    global_diff_vmax = float(np.percentile(diff.ravel(), 99))
+
     fig_a, fig_b, fig_diff = viz.render_comparison(
         pred_a=pred_a,
         pred_b=pred_b,
         diff=diff,
         time_step=0,
+        pred_vmin=global_pred_vmin,
+        pred_vmax=global_pred_vmax,
+        diff_vmin=global_diff_vmin,
+        diff_vmax=global_diff_vmax,
     )
 
     metadata = dict(demo_data.get("metadata") or {})
@@ -107,6 +124,12 @@ def _initialize_demo_data(demo_data: dict[str, Any]) -> dict[str, Any]:
     summary = _compute_summary_stats(diff)
     if metadata:
         summary = {"demo_metadata": metadata, **summary}
+
+    timing_a: list[float] = demo_data.get("timing_a") or [float(i) for i in range(timesteps)]
+    timing_b: list[float] = demo_data.get("timing_b") or [float(i) for i in range(timesteps)]
+
+    video_a = _resolve_reference_video(demo_data.get("video_a"))
+    video_b = _resolve_reference_video(demo_data.get("video_b"))
 
     return {
         "status": "Demo mode: loaded cached sample predictions.",
@@ -119,8 +142,10 @@ def _initialize_demo_data(demo_data: dict[str, Any]) -> dict[str, Any]:
         "fig_b": fig_b,
         "fig_diff": fig_diff,
         "summary": summary,
-        "video_a": _resolve_reference_video(demo_data.get("video_a")),
-        "video_b": _resolve_reference_video(demo_data.get("video_b")),
+        "video_a": video_a,
+        "video_b": video_b,
+        "timing_a": timing_a,
+        "timing_b": timing_b,
     }
 
 
@@ -192,6 +217,56 @@ def _compute_summary_stats(diff: np.ndarray) -> dict[str, Any]:
         "overall_max_difference": float(np.max(diff_np)),
         "top_5_time_steps_by_mean_cortical_difference": top_time_steps,
     }
+
+
+def _write_intensities_binary(path: Path, pred_a: np.ndarray, pred_b: np.ndarray, diff: np.ndarray) -> None:
+    """Write intensities + per-frame color scales as flat float32 binary.
+
+    Layout:
+      [T: int32, N: int32]                          — 8 bytes header
+      [pred_a_flat: float32 × T×N]                  — intensity data
+      [pred_b_flat: float32 × T×N]
+      [diff_flat:   float32 × T×N]
+      [pred_vmin: float32 × T]                      — per-frame color scales
+      [pred_vmax: float32 × T]
+      [diff_vmin: float32 × T]
+      [diff_vmax: float32 × T]
+    """
+    T, N = int(pred_a.shape[0]), int(pred_a.shape[1])
+
+    # Global robust range (1st–99th percentile across all frames) so the colour
+    # scale is fixed — high-activation frames look brighter than low-activation
+    # ones, making temporal variation visible.  Percentiles avoid the outlier
+    # compression that made np.min/max flatten the useful signal.
+    pred_all = np.concatenate([pred_a.ravel(), pred_b.ravel()])
+    pred_vmin_val = float(np.percentile(pred_all, 1))
+    pred_vmax_val = float(np.percentile(pred_all, 99))
+    diff_vmin_val = float(np.percentile(diff.ravel(), 1))
+    diff_vmax_val = float(np.percentile(diff.ravel(), 99))
+
+    # Broadcast scalar to per-frame arrays (same value every frame = fixed scale).
+    pred_vmin = np.full(T, pred_vmin_val, dtype=np.float32)
+    pred_vmax = np.full(T, pred_vmax_val, dtype=np.float32)
+    diff_vmin = np.full(T, diff_vmin_val, dtype=np.float32)
+    diff_vmax = np.full(T, diff_vmax_val, dtype=np.float32)
+
+    with path.open("wb") as f:
+        f.write(struct.pack("<2i", T, N))
+        f.write(pred_a.astype(np.float32).tobytes())
+        f.write(pred_b.astype(np.float32).tobytes())
+        f.write(diff.astype(np.float32).tobytes())
+        f.write(pred_vmin.tobytes())
+        f.write(pred_vmax.tobytes())
+        f.write(diff_vmin.tobytes())
+        f.write(diff_vmax.tobytes())
+
+
+def update_timestamp_only(
+    time_step: int,
+    timing_a: list[float] | None,
+    timing_b: list[float] | None,
+) -> str:
+    return _timestamp_label(int(time_step), timing_a, timing_b)
 
 
 def _progress_yield(message: str) -> RunOutput:
@@ -304,11 +379,21 @@ def run_comparison(ad_a_upload: Any, ad_b_upload: Any):
             return
 
 
+def _timestamp_label(step: int, timing_a: list[float] | None, timing_b: list[float] | None) -> str:
+    t_a = timing_a[step] if timing_a and step < len(timing_a) else float(step)
+    t_b = timing_b[step] if timing_b and step < len(timing_b) else float(step)
+    if abs(t_a - t_b) < 0.1:
+        return f"**t = {step}** &nbsp;·&nbsp; ≈ **{t_a:.1f}s** into both videos"
+    return f"**t = {step}** &nbsp;·&nbsp; Ad A ≈ **{t_a:.1f}s** &nbsp;|&nbsp; Ad B ≈ **{t_b:.1f}s**"
+
+
 def update_time_step(
     time_step: int,
     pred_a: np.ndarray | None,
     pred_b: np.ndarray | None,
     diff: np.ndarray | None,
+    timing_a: list[float] | None = None,
+    timing_b: list[float] | None = None,
 ):
     if pred_a is None or pred_b is None or diff is None:
         raise gr.Error("Run Comparison first.")
@@ -331,9 +416,286 @@ def update_time_step(
         )
 
     try:
-        return viz.render_comparison(pred_a_np, pred_b_np, diff_np, time_step=step)
+        figs = viz.render_comparison(pred_a_np, pred_b_np, diff_np, time_step=step)
     except Exception as exc:
         raise gr.Error(f"Failed to render comparison plots: {exc}") from exc
+
+    return (*figs, _timestamp_label(step, timing_a, timing_b))
+
+
+_file_servers: dict[str, int] = {}  # directory → port
+
+
+def _find_plotly_js() -> Path | None:
+    """Locate the bundled plotly.min.js shipped with the plotly Python package."""
+    try:
+        import plotly as _plotly_pkg  # noqa: PLC0415
+        candidate = Path(_plotly_pkg.__file__).parent / "package_data" / "plotly.min.js"
+        return candidate if candidate.exists() else None
+    except Exception:
+        return None
+
+
+def _start_video_file_server(directory: str, port: int = 7862) -> int:
+    """Start a per-directory background HTTP server. Returns the port used.
+
+    Each unique directory gets its own server so multiple demo sessions in the
+    same process don't cross-serve stale assets from the wrong folder.
+    """
+    canonical = str(Path(directory).expanduser().resolve())
+    if canonical in _file_servers:
+        return _file_servers[canonical]
+
+    plotly_js_path = _find_plotly_js()
+
+    class _Handler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, directory=directory, **kwargs)
+
+        def end_headers(self) -> None:  # type: ignore[override]
+            # CORS headers on every response so fetch() from Gradio's port works.
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+            super().end_headers()
+
+        def do_OPTIONS(self) -> None:  # type: ignore[override]
+            self.send_response(200)
+            self.end_headers()
+
+        def do_GET(self) -> None:  # type: ignore[override]
+            # Serve plotly.min.js from the venv so the browser can set window.Plotly.
+            if self.path == "/plotly.min.js" and plotly_js_path:
+                content = plotly_js_path.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/javascript")
+                self.send_header("Content-Length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+                return
+            super().do_GET()
+
+        def log_message(self, *args: Any) -> None:
+            pass  # silence request logs
+
+    for candidate in range(port, port + 20):
+        try:
+            server = http.server.HTTPServer(("127.0.0.1", candidate), _Handler)
+        except OSError:
+            continue
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        _file_servers[canonical] = candidate
+        return candidate
+
+    raise RuntimeError(
+        f"Could not bind file server to any port in range {port}–{port + 19}. "
+        "Free one of those ports and retry."
+    )
+
+
+def _make_show_step_js() -> str:
+    """Standalone JS that defines window._tribeShowStep. No braces need escaping."""
+    return (
+        "  window._tribeShowStep = function(step) {\n"
+        "    const f = window._tribeFrm, P = window.Plotly;\n"
+        "    if (!f || !P) return;\n"
+        "    const { T, N, data, scales } = f;\n"
+        "    if (step < 0 || step >= T) return;\n"
+        # scales layout: [pred_vmin×T, pred_vmax×T, diff_vmin×T, diff_vmax×T]
+        "    const pVmin = scales[step],       pVmax = scales[T + step];\n"
+        "    const dVmin = scales[2*T + step], dVmax = scales[3*T + step];\n"
+        "    ['tribe-plot-a', 'tribe-plot-b', 'tribe-plot-diff'].forEach((id, p) => {\n"
+        "      const div = document.querySelector('#' + id + ' .js-plotly-plot');\n"
+        "      if (!div) return;\n"
+        "      const off = p * T * N + step * N;\n"
+        "      const vmin = p < 2 ? pVmin : dVmin;\n"
+        "      const vmax = p < 2 ? pVmax : dVmax;\n"
+        "      P.update(div,\n"
+        "        { intensity: [data.subarray(off, off + N)], cmin: vmin, cmax: vmax },\n"
+        "        { 'title.text': ['Ad A','Ad B','Difference'][p] + ' (t=' + step + ')' },\n"
+        "        [0]);\n"
+        "    });\n"
+        "    const t = window._tribeTiming;\n"
+        "    const ta = t ? (t.a[step] ?? step) : step;\n"
+        "    const c = document.getElementById('tribe-clock');\n"
+        "    if (c) c.textContent = 't=' + step + '  \u00b7  ' + ta.toFixed(1) + 's';\n"
+        "  };\n"
+    )
+
+
+def _init_js(port: int, timing_a: list[float], timing_b: list[float]) -> str:
+    """gr.Blocks(js=...) init: fetch assets + define window._tribeShowStep at
+    page load so the slider works before the user ever clicks Play."""
+    tp = json.dumps({"a": timing_a, "b": timing_b})
+    has_plotly = _find_plotly_js() is not None
+    psrc = f"http://127.0.0.1:{port}/plotly.min.js"
+    load_plotly = (
+        "  const _ps = document.createElement('script');\n"
+        f"  _ps.src = '{psrc}'; _ps.onload = _def; document.head.appendChild(_ps);\n"
+        if has_plotly
+        else "  _def();\n"
+    )
+    return (
+        "() => {\n"
+        f"  window._tribeTiming = {tp};\n"
+        f"  fetch('http://127.0.0.1:{port}/intensities.bin')\n"
+        "    .then(r => r.arrayBuffer())\n"
+        "    .then(buf => {\n"
+        "      const h = new Int32Array(buf, 0, 2), T = h[0], N = h[1];\n"
+        "      const dataLen = 3 * T * N;\n"
+        "      window._tribeFrm = {\n"
+        "        T, N,\n"
+        "        data:   new Float32Array(buf, 8, dataLen),\n"
+        "        scales: new Float32Array(buf, 8 + dataLen * 4, 4 * T),\n"
+        "      };\n"
+        "    }).catch(e => console.warn('[tribe] init fetch:', e));\n"
+        "  function _def() {\n"
+        + _make_show_step_js()
+        + "  }\n"
+        "  if (window.Plotly) { _def(); } else {\n"
+        + load_plotly
+        + "  }\n"
+        "}"
+    )
+
+
+def _play_js(port: int, timing_a: list[float], timing_b: list[float]) -> str:
+    """Play-button handler: loads assets lazily, (re-)defines _tribeShowStep,
+    attaches timeupdate sync, plays both videos."""
+    tp = json.dumps({"a": timing_a, "b": timing_b})
+    has_plotly = _find_plotly_js() is not None
+    psrc = f"http://127.0.0.1:{port}/plotly.min.js"
+    load_plotly_js = (
+        "    const _ps = document.createElement('script');\n"
+        f"    _ps.src = '{psrc}';\n"
+        "    _ps.onload = () => { (window._tribePending||[]).forEach(f=>f()); };\n"
+        "    _ps.onerror = rej; document.head.appendChild(_ps);\n"
+        if has_plotly
+        else "    res();\n"
+    )
+    return (
+        "() => {\n"
+        "  const va = document.getElementById('tribe-vid-a') || document.querySelectorAll('video')[0];\n"
+        "  const vb = document.getElementById('tribe-vid-b') || document.querySelectorAll('video')[1];\n"
+        "  if (!va || !vb) return;\n"
+        "\n"
+        "  const loadPlotly = window.Plotly ? Promise.resolve()\n"
+        "    : new Promise((res, rej) => {\n"
+        "        if (window._tribePending) { window._tribePending.push(res); return; }\n"
+        "        window._tribePending = [res];\n"
+        + load_plotly_js
+        + "      });\n"
+        "\n"
+        f"  const loadData = window._tribeFrm ? Promise.resolve()\n"
+        f"    : fetch('http://127.0.0.1:{port}/intensities.bin')\n"
+        "        .then(r => r.arrayBuffer())\n"
+        "        .then(buf => {\n"
+        "          const h = new Int32Array(buf, 0, 2), T = h[0], N = h[1];\n"
+        "          const dataLen = 3 * T * N;\n"
+        "          window._tribeFrm = {\n"
+        "            T, N,\n"
+        "            data:   new Float32Array(buf, 8, dataLen),\n"
+        "            scales: new Float32Array(buf, 8 + dataLen * 4, 4 * T),\n"
+        "          };\n"
+        f"          window._tribeTiming = {tp};\n"
+        "        });\n"
+        "\n"
+        "  Promise.all([loadPlotly, loadData])\n"
+        "    .then(() => {\n"
+        + _make_show_step_js().replace("\n", "\n  ")
+        + "    })\n"
+        "    .catch(e => console.warn('[tribe] asset load failed:', e));\n"
+        "\n"
+        "  if (!va._tribeSync) {\n"
+        "    va._tribeSync = () => {\n"
+        "      const c = document.getElementById('tribe-clock');\n"
+        "      if (c) c.textContent = va.currentTime.toFixed(1) + 's';\n"
+        "      if (Math.abs(va.currentTime - vb.currentTime) > 0.3) vb.currentTime = va.currentTime;\n"
+        "      const step = Math.floor(va.currentTime);\n"
+        "      if (step !== va._lastStep) {\n"
+        "        va._lastStep = step;\n"
+        "        if (window._tribeShowStep) window._tribeShowStep(step);\n"
+        "        const wrap = document.getElementById('tribe-time-slider');\n"
+        "        const slider = wrap ? wrap.querySelector('input[type=\"range\"]') : document.querySelector('input[type=\"range\"]');\n"
+        "        if (slider && step <= parseInt(slider.max)) slider.value = step;\n"
+        "      }\n"
+        "    };\n"
+        "    va.addEventListener('timeupdate', va._tribeSync);\n"
+        "    va.addEventListener('ended', () => vb.pause());\n"
+        "  }\n"
+        "  Promise.all([va.play(), vb.play()]).catch(() => {});\n"
+        "}\n"
+    )
+
+
+# ── Shared JS snippets ─────────────────────────────────────────────────────────
+
+# Fallback _PLAY_JS used in full (non-demo) mode where no video server runs.
+_PLAY_JS = """
+() => {
+  const va = document.getElementById('tribe-vid-a') || document.querySelectorAll('video')[0];
+  const vb = document.getElementById('tribe-vid-b') || document.querySelectorAll('video')[1];
+  if (!va || !vb) return;
+  if (!va._tribeSync) {
+    va._tribeSync = () => {
+      if (Math.abs(va.currentTime - vb.currentTime) > 0.3) vb.currentTime = va.currentTime;
+    };
+    va.addEventListener('timeupdate', va._tribeSync);
+    va.addEventListener('ended', () => vb.pause());
+  }
+  Promise.all([va.play(), vb.play()]).catch(() => {});
+}
+"""
+
+_PAUSE_JS = """
+() => {
+  const va = document.getElementById('tribe-vid-a') || document.querySelectorAll('video')[0];
+  const vb = document.getElementById('tribe-vid-b') || document.querySelectorAll('video')[1];
+  if (va) va.pause();
+  if (vb) vb.pause();
+}
+"""
+
+# For manual slider drag: update plots client-side if intensities are loaded,
+# seek videos, then pass inputs through to Python (for timestamp update).
+_SEEK_JS = """
+(step, ...rest) => {
+  if (window._tribeShowStep) window._tribeShowStep(parseInt(step));
+  const va = document.getElementById('tribe-vid-a') || document.querySelectorAll('video')[0];
+  const vb = document.getElementById('tribe-vid-b') || document.querySelectorAll('video')[1];
+  if (va && va.paused) va.currentTime = step;
+  if (vb && vb.paused) vb.currentTime = step;
+  const c = document.getElementById('tribe-clock');
+  if (c && !window._tribeShowStep) c.textContent = parseFloat(step).toFixed(1) + 's';
+  return [step, ...rest];
+}
+"""
+
+
+def _video_elements_html(video_a: str, video_b: str) -> str:
+    """Pure HTML — no script tags. JS is injected separately via gr.Blocks(js=...)."""
+    directory = str(Path(video_a).parent)
+    port = _start_video_file_server(directory)
+    url_a = f"http://127.0.0.1:{port}/{Path(video_a).name}"
+    url_b = f"http://127.0.0.1:{port}/{Path(video_b).name}"
+    return f"""
+<div style="display:flex;gap:12px;padding:12px;background:#1a1a1a;border-radius:10px">
+  <div style="flex:1;min-width:0">
+    <p style="color:#ccc;text-align:center;margin:0 0 6px;font-weight:600;font-size:13px">Ad A</p>
+    <video id="tribe-vid-a" src="{url_a}"
+      style="width:100%;border-radius:6px;display:block" preload="auto"></video>
+  </div>
+  <div style="flex:1;min-width:0">
+    <p style="color:#ccc;text-align:center;margin:0 0 6px;font-weight:600;font-size:13px">Ad B</p>
+    <video id="tribe-vid-b" src="{url_b}"
+      style="width:100%;border-radius:6px;display:block" preload="auto"></video>
+  </div>
+</div>
+<div style="text-align:center;padding:8px 0">
+  <span id="tribe-clock"
+    style="color:#888;font-family:monospace;font-size:13px">0.0s</span>
+</div>
+"""
 
 
 def build_app(demo_data: dict[str, Any] | None = None) -> gr.Blocks:
@@ -341,59 +703,95 @@ def build_app(demo_data: dict[str, Any] | None = None) -> gr.Blocks:
     initial = _initialize_demo_data(demo_data) if demo_mode else None
     initial_slider = initial["slider"] if initial else _slider_config(0)
 
-    with gr.Blocks(title="TRIBE v2 Comparison MVP") as demo:
-        gr.Markdown("## TRIBE v2 Comparison MVP")
-        if demo_mode:
-            gr.Markdown(
-                "Demo mode is active. Cached predictions are preloaded and upload/inference controls are disabled."
-            )
-
-        with gr.Row():
-            ad_a_input = gr.Video(
-                label="Ad A (reference only)" if demo_mode else "Ad A",
-                sources=["upload"],
-                value=initial["video_a"] if initial else None,
-                interactive=not demo_mode,
-            )
-            ad_b_input = gr.Video(
-                label="Ad B (reference only)" if demo_mode else "Ad B",
-                sources=["upload"],
-                value=initial["video_b"] if initial else None,
-                interactive=not demo_mode,
-            )
-
-        run_button = gr.Button("Run Comparison", variant="primary", interactive=not demo_mode)
-        status_box = gr.Textbox(
-            label="Status / Progress",
-            lines=2,
-            value=initial["status"] if initial else "Upload two videos and click Run Comparison.",
-            interactive=False,
+    # Prepare client-side acceleration assets when videos are available.
+    play_js_str: str | None = None
+    if demo_mode and initial and initial.get("video_a") and initial.get("video_b"):
+        directory = str(Path(initial["video_a"]).parent)
+        port = _start_video_file_server(directory)
+        _write_intensities_binary(
+            Path(directory) / "intensities.bin",
+            initial["pred_a"],
+            initial["pred_b"],
+            initial["diff"],
         )
+        play_js_str = _play_js(port, initial["timing_a"], initial["timing_b"])
 
+    _launch_js = _init_js(port, initial["timing_a"], initial["timing_b"]) if play_js_str else None
+
+    with gr.Blocks(title="TRIBE v2 Comparison Workbench") as demo:
+        gr.Markdown("# TRIBE v2 Comparison Workbench")
+
+        if demo_mode:
+            # ── Synced video players ───────────────────────────────────────────
+            video_a = initial.get("video_a")
+            video_b = initial.get("video_b")
+            if video_a and video_b:
+                gr.HTML(_video_elements_html(video_a, video_b))
+                with gr.Row():
+                    play_btn = gr.Button("▶ Play both", variant="primary", size="sm", visible=True)
+                    pause_btn = gr.Button("⏸ Pause both", variant="secondary", size="sm", visible=False)
+
+                play_btn.click(
+                    fn=lambda: (gr.update(visible=False), gr.update(visible=True)),
+                    outputs=[play_btn, pause_btn],
+                    js=play_js_str or _PLAY_JS,
+                )
+                pause_btn.click(
+                    fn=lambda: (gr.update(visible=True), gr.update(visible=False)),
+                    outputs=[play_btn, pause_btn],
+                    js=_PAUSE_JS,
+                )
+        else:
+            # ── Upload + inference controls (full mode only) ───────────────────
+            gr.Markdown("### Upload Videos")
+            with gr.Row():
+                ad_a_input = gr.Video(label="Ad A", sources=["upload"])
+                ad_b_input = gr.Video(label="Ad B", sources=["upload"])
+            run_button = gr.Button("Run Comparison", variant="primary")
+            status_box = gr.Textbox(
+                label="Status",
+                lines=2,
+                value="Upload two videos and click Run Comparison.",
+                interactive=False,
+            )
+
+        # ── Timestamp display + slider ─────────────────────────────────────────
+        gr.Markdown("### Brain Predictions")
+        timestamp_display = gr.Markdown(
+            _timestamp_label(0, initial.get("timing_a") if initial else None,
+                             initial.get("timing_b") if initial else None)
+        )
         time_slider = gr.Slider(
-            label="time_step",
+            label="Time step",
             minimum=initial_slider["minimum"],
             maximum=initial_slider["maximum"],
             value=initial_slider["value"],
             step=initial_slider["step"],
             interactive=initial_slider["interactive"],
+            elem_id="tribe-time-slider",
         )
 
+        # ── Brain plots ────────────────────────────────────────────────────────
         with gr.Row():
-            plot_a = gr.Plot(label="Ad A", value=initial["fig_a"] if initial else None)
-            plot_b = gr.Plot(label="Ad B", value=initial["fig_b"] if initial else None)
-            plot_diff = gr.Plot(label="Difference", value=initial["fig_diff"] if initial else None)
+            plot_a = gr.Plot(label="Ad A", value=initial["fig_a"] if initial else None, elem_id="tribe-plot-a")
+            plot_b = gr.Plot(label="Ad B", value=initial["fig_b"] if initial else None, elem_id="tribe-plot-b")
+            plot_diff = gr.Plot(label="Difference", value=initial["fig_diff"] if initial else None, elem_id="tribe-plot-diff")
 
+        # ── Summary stats ──────────────────────────────────────────────────────
         summary_stats = gr.JSON(
             label="Summary Stats",
             value=initial["summary"] if initial else _default_summary(),
         )
 
+        # ── State ──────────────────────────────────────────────────────────────
         pred_a_state = gr.State(value=initial["pred_a"] if initial else None)
         pred_b_state = gr.State(value=initial["pred_b"] if initial else None)
         diff_state = gr.State(value=initial["diff"] if initial else None)
         metadata_state = gr.State(value=initial["metadata"] if initial else {})
+        timing_a_state = gr.State(value=initial["timing_a"] if initial else None)
+        timing_b_state = gr.State(value=initial["timing_b"] if initial else None)
 
+        # ── Event handlers ─────────────────────────────────────────────────────
         if not demo_mode:
             run_button.click(
                 fn=run_comparison,
@@ -412,14 +810,29 @@ def build_app(demo_data: dict[str, Any] | None = None) -> gr.Blocks:
                 ],
             )
 
-        time_slider.change(
-            fn=update_time_step,
-            inputs=[time_slider, pred_a_state, pred_b_state, diff_state],
-            outputs=[plot_a, plot_b, plot_diff],
-        )
+        if demo_mode and play_js_str:
+            # Plots update client-side via Plotly.restyle (zero round-trips).
+            # Python only updates the timestamp label.
+            time_slider.change(
+                fn=update_timestamp_only,
+                inputs=[time_slider, timing_a_state, timing_b_state],
+                outputs=[timestamp_display],
+                js=_SEEK_JS,
+            )
+        else:
+            time_slider.change(
+                fn=update_time_step,
+                inputs=[time_slider, pred_a_state, pred_b_state, diff_state,
+                        timing_a_state, timing_b_state],
+                outputs=[plot_a, plot_b, plot_diff, timestamp_display],
+                js=_SEEK_JS,
+            )
 
-    return demo.queue()
+    app = demo.queue()
+    app._tribe_launch_js = _launch_js  # passed to launch() by the caller
+    return app
 
 
 if __name__ == "__main__":
-    build_app().launch()
+    app = build_app()
+    app.launch(js=app._tribe_launch_js)

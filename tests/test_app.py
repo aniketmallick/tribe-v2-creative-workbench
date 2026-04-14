@@ -32,7 +32,7 @@ def test_build_app_supports_demo_data(monkeypatch: pytest.MonkeyPatch) -> None:
         def to_json(self) -> str:
             return "{}"
 
-    def fake_render_comparison(pred_a, pred_b, diff, time_step):
+    def fake_render_comparison(pred_a, pred_b, diff, time_step, **kwargs):
         called["time_step"] = time_step
         return DummyPlot(), DummyPlot(), DummyPlot()
 
@@ -130,7 +130,8 @@ def test_update_time_step_calls_render_comparison(monkeypatch: pytest.MonkeyPatc
 
     result = app.update_time_step(2, pred_a, pred_b, diff)
 
-    assert result == ("fig_a", "fig_b", "fig_diff")
+    assert result[:3] == ("fig_a", "fig_b", "fig_diff")
+    assert isinstance(result[3], str)  # timestamp label
     assert called["step"] == 2
 
 
