@@ -74,7 +74,7 @@ def test_main_builds_and_launches_when_assets_exist(monkeypatch: pytest.MonkeyPa
     launched = {"called": False}
 
     class DummyApp:
-        def launch(self) -> None:
+        def launch(self, **kwargs: object) -> None:
             launched["called"] = True
 
     def fake_build_app(*, demo_data):

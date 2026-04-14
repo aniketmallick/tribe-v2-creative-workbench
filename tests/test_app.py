@@ -130,7 +130,8 @@ def test_update_time_step_calls_render_comparison(monkeypatch: pytest.MonkeyPatc
 
     result = app.update_time_step(2, pred_a, pred_b, diff)
 
-    assert result == ("fig_a", "fig_b", "fig_diff")
+    assert result[:3] == ("fig_a", "fig_b", "fig_diff")
+    assert isinstance(result[3], str)  # timestamp label
     assert called["step"] == 2
 
 

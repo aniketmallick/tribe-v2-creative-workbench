@@ -432,105 +432,138 @@ def _start_video_file_server(directory: str, port: int = 7862) -> int:
         def log_message(self, *args: Any) -> None:
             pass  # silence request logs
 
-    server = http.server.HTTPServer(("127.0.0.1", port), _Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    _file_server_port = port
-    return port
+    for candidate in range(port, port + 20):
+        try:
+            server = http.server.HTTPServer(("127.0.0.1", candidate), _Handler)
+        except OSError:
+            continue
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        _file_server_port = candidate
+        return candidate
+
+    raise RuntimeError(
+        f"Could not bind file server to any port in range {port}–{port + 19}. "
+        "Free one of those ports and retry."
+    )
+
+
+def _make_show_step_js() -> str:
+    """Standalone JS that defines window._tribeShowStep. No braces need escaping."""
+    return (
+        "  window._tribeShowStep = function(step) {\n"
+        "    const f = window._tribeFrm, P = window.Plotly;\n"
+        "    if (!f || !P) return;\n"
+        "    const { T, N, data } = f;\n"
+        "    if (step < 0 || step >= T) return;\n"
+        "    ['tribe-plot-a', 'tribe-plot-b', 'tribe-plot-diff'].forEach((id, p) => {\n"
+        "      const div = document.querySelector('#' + id + ' .js-plotly-plot');\n"
+        "      if (!div) return;\n"
+        "      const off = p * T * N + step * N;\n"
+        "      P.update(div, { intensity: [data.subarray(off, off + N)] },\n"
+        "               { 'title.text': ['Ad A','Ad B','Difference'][p] + ' (t=' + step + ')' }, [0]);\n"
+        "    });\n"
+        "    const t = window._tribeTiming;\n"
+        "    const ta = t ? (t.a[step] ?? step) : step;\n"
+        "    const c = document.getElementById('tribe-clock');\n"
+        "    if (c) c.textContent = 't=' + step + '  \u00b7  ' + ta.toFixed(1) + 's';\n"
+        "  };\n"
+    )
+
+
+def _init_js(port: int, timing_a: list[float], timing_b: list[float]) -> str:
+    """gr.Blocks(js=...) init: fetch assets + define window._tribeShowStep at
+    page load so the slider works before the user ever clicks Play."""
+    tp = json.dumps({"a": timing_a, "b": timing_b})
+    has_plotly = _find_plotly_js() is not None
+    psrc = f"http://127.0.0.1:{port}/plotly.min.js"
+    load_plotly = (
+        "  const _ps = document.createElement('script');\n"
+        f"  _ps.src = '{psrc}'; _ps.onload = _def; document.head.appendChild(_ps);\n"
+        if has_plotly
+        else "  _def();\n"
+    )
+    return (
+        "() => {\n"
+        f"  window._tribeTiming = {tp};\n"
+        f"  fetch('http://127.0.0.1:{port}/intensities.bin')\n"
+        "    .then(r => r.arrayBuffer())\n"
+        "    .then(buf => {\n"
+        "      const h = new Int32Array(buf, 0, 2);\n"
+        "      window._tribeFrm = { T: h[0], N: h[1], data: new Float32Array(buf, 8) };\n"
+        "    }).catch(e => console.warn('[tribe] init fetch:', e));\n"
+        "  function _def() {\n"
+        + _make_show_step_js()
+        + "  }\n"
+        "  if (window.Plotly) { _def(); } else {\n"
+        + load_plotly
+        + "  }\n"
+        "}"
+    )
 
 
 def _play_js(port: int, timing_a: list[float], timing_b: list[float]) -> str:
-    """Generate the Play-button JS handler.
-
-    Everything is self-contained: Plotly.min.js and intensities.bin are loaded
-    lazily on first click from the local HTTP server.  No dependency on
-    gr.Blocks(js=...) which is unreliable in Gradio 6.
-    """
-    timing_payload = json.dumps({"a": timing_a, "b": timing_b})
+    """Play-button handler: loads assets lazily, (re-)defines _tribeShowStep,
+    attaches timeupdate sync, plays both videos."""
+    tp = json.dumps({"a": timing_a, "b": timing_b})
     has_plotly = _find_plotly_js() is not None
-    plotly_src = f"http://127.0.0.1:{port}/plotly.min.js" if has_plotly else ""
-
-    return f"""
-() => {{
-  const va = document.getElementById('tribe-vid-a') || document.querySelectorAll('video')[0];
-  const vb = document.getElementById('tribe-vid-b') || document.querySelectorAll('video')[1];
-  if (!va || !vb) return;
-
-  /* Define (or refresh) the step-renderer now — it reads window.Plotly at call-time. */
-  function _doShowStep(step) {{
-    const f = window._tribeFrm;
-    const P = window.Plotly;
-    if (!f || !P) return;
-    const {{ T, N, data }} = f;
-    if (step < 0 || step >= T) return;
-    const labels = ['Ad A', 'Ad B', 'Difference'];
-    ['tribe-plot-a', 'tribe-plot-b', 'tribe-plot-diff'].forEach((id, p) => {{
-      const div = document.querySelector('#' + id + ' .js-plotly-plot');
-      if (!div) return;
-      const off = p * T * N + step * N;
-      P.update(
-        div,
-        {{ intensity: [data.subarray(off, off + N)] }},
-        {{ 'title.text': labels[p] + ' (t=' + step + ')' }},
-        [0]
-      );
-    }});
-    /* Overwrite clock with richer step label once we have timing data. */
-    const timing = window._tribeTiming;
-    const ta = timing ? (timing.a[step] ?? step) : step;
-    const c = document.getElementById('tribe-clock');
-    if (c) c.textContent = 't=' + step + '  \u00b7  ' + ta.toFixed(1) + 's';
-  }}
-  window._tribeShowStep = _doShowStep;
-
-  /* Load Plotly once (idempotent). */
-  const loadPlotly = window.Plotly
-    ? Promise.resolve()
-    : new Promise((res, rej) => {{
-        if (window._tribeLoadingPlotly) {{ window._tribeLoadingPlotly.push(res); return; }}
-        window._tribeLoadingPlotly = [res];
-        const s = document.createElement('script');
-        s.src = '{plotly_src}';
-        s.onload = () => {{ (window._tribeLoadingPlotly || []).forEach(fn => fn()); }};
-        s.onerror = rej;
-        document.head.appendChild(s);
-      }});
-
-  /* Load intensity binary once (idempotent). */
-  const loadData = window._tribeFrm
-    ? Promise.resolve()
-    : fetch('http://127.0.0.1:{port}/intensities.bin')
-        .then(r => r.arrayBuffer())
-        .then(buf => {{
-          const hdr = new Int32Array(buf, 0, 2);
-          window._tribeFrm = {{ T: hdr[0], N: hdr[1], data: new Float32Array(buf, 8) }};
-          window._tribeTiming = {timing_payload};
-        }});
-
-  Promise.all([loadPlotly, loadData]).catch(e => console.warn('[tribe] asset load failed:', e));
-
-  /* Attach timeupdate listener exactly once per video element. */
-  if (!va._tribeSync) {{
-    va._tribeSync = () => {{
-      /* Clock ticks on every frame regardless of asset-load state. */
-      const c = document.getElementById('tribe-clock');
-      if (c) c.textContent = va.currentTime.toFixed(1) + 's';
-      if (Math.abs(va.currentTime - vb.currentTime) > 0.3) vb.currentTime = va.currentTime;
-      const step = Math.floor(va.currentTime);
-      if (step !== va._lastStep) {{
-        va._lastStep = step;
-        _doShowStep(step);
-        const wrap = document.getElementById('tribe-time-slider');
-        const slider = wrap ? wrap.querySelector('input[type="range"]') : document.querySelector('input[type="range"]');
-        if (slider && step <= parseInt(slider.max)) slider.value = step;
-      }}
-    }};
-    va.addEventListener('timeupdate', va._tribeSync);
-    va.addEventListener('ended', () => vb.pause());
-  }}
-  Promise.all([va.play(), vb.play()]).catch(() => {{}});
-}}
-"""
+    psrc = f"http://127.0.0.1:{port}/plotly.min.js"
+    load_plotly_js = (
+        "    const _ps = document.createElement('script');\n"
+        f"    _ps.src = '{psrc}';\n"
+        "    _ps.onload = () => { (window._tribePending||[]).forEach(f=>f()); };\n"
+        "    _ps.onerror = rej; document.head.appendChild(_ps);\n"
+        if has_plotly
+        else "    res();\n"
+    )
+    return (
+        "() => {\n"
+        "  const va = document.getElementById('tribe-vid-a') || document.querySelectorAll('video')[0];\n"
+        "  const vb = document.getElementById('tribe-vid-b') || document.querySelectorAll('video')[1];\n"
+        "  if (!va || !vb) return;\n"
+        "\n"
+        "  const loadPlotly = window.Plotly ? Promise.resolve()\n"
+        "    : new Promise((res, rej) => {\n"
+        "        if (window._tribePending) { window._tribePending.push(res); return; }\n"
+        "        window._tribePending = [res];\n"
+        + load_plotly_js
+        + "      });\n"
+        "\n"
+        f"  const loadData = window._tribeFrm ? Promise.resolve()\n"
+        f"    : fetch('http://127.0.0.1:{port}/intensities.bin')\n"
+        "        .then(r => r.arrayBuffer())\n"
+        "        .then(buf => {\n"
+        "          const h = new Int32Array(buf, 0, 2);\n"
+        "          window._tribeFrm = { T: h[0], N: h[1], data: new Float32Array(buf, 8) };\n"
+        f"          window._tribeTiming = {tp};\n"
+        "        });\n"
+        "\n"
+        "  Promise.all([loadPlotly, loadData])\n"
+        "    .then(() => {\n"
+        + _make_show_step_js().replace("\n", "\n  ")
+        + "    })\n"
+        "    .catch(e => console.warn('[tribe] asset load failed:', e));\n"
+        "\n"
+        "  if (!va._tribeSync) {\n"
+        "    va._tribeSync = () => {\n"
+        "      const c = document.getElementById('tribe-clock');\n"
+        "      if (c) c.textContent = va.currentTime.toFixed(1) + 's';\n"
+        "      if (Math.abs(va.currentTime - vb.currentTime) > 0.3) vb.currentTime = va.currentTime;\n"
+        "      const step = Math.floor(va.currentTime);\n"
+        "      if (step !== va._lastStep) {\n"
+        "        va._lastStep = step;\n"
+        "        if (window._tribeShowStep) window._tribeShowStep(step);\n"
+        "        const wrap = document.getElementById('tribe-time-slider');\n"
+        "        const slider = wrap ? wrap.querySelector('input[type=\"range\"]') : document.querySelector('input[type=\"range\"]');\n"
+        "        if (slider && step <= parseInt(slider.max)) slider.value = step;\n"
+        "      }\n"
+        "    };\n"
+        "    va.addEventListener('timeupdate', va._tribeSync);\n"
+        "    va.addEventListener('ended', () => vb.pause());\n"
+        "  }\n"
+        "  Promise.all([va.play(), vb.play()]).catch(() => {});\n"
+        "}\n"
+    )
 
 
 # ── Shared JS snippets ─────────────────────────────────────────────────────────
@@ -620,6 +653,8 @@ def build_app(demo_data: dict[str, Any] | None = None) -> gr.Blocks:
             initial["diff"],
         )
         play_js_str = _play_js(port, initial["timing_a"], initial["timing_b"])
+
+    _launch_js = _init_js(port, initial["timing_a"], initial["timing_b"]) if play_js_str else None
 
     with gr.Blocks(title="TRIBE v2 Comparison Workbench") as demo:
         gr.Markdown("# TRIBE v2 Comparison Workbench")
@@ -731,8 +766,11 @@ def build_app(demo_data: dict[str, Any] | None = None) -> gr.Blocks:
                 js=_SEEK_JS,
             )
 
-    return demo.queue()
+    app = demo.queue()
+    app._tribe_launch_js = _launch_js  # passed to launch() by the caller
+    return app
 
 
 if __name__ == "__main__":
-    build_app().launch()
+    app = build_app()
+    app.launch(js=app._tribe_launch_js)

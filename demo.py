@@ -85,7 +85,7 @@ def main() -> int:
         print(f"Failed to load demo mode from {sample_path}: {exc}")
         return 1
 
-    demo_app.launch()
+    demo_app.launch(js=getattr(demo_app, "_tribe_launch_js", None))
     return 0
 
 
