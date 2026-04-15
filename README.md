@@ -210,7 +210,7 @@ tribe-v2-creative-workbench/
 | Python | 3.11 – 3.13 | 3.11 – 3.13 |
 | GPU | Not needed | CUDA-capable GPU recommended |
 | HuggingFace account | Not needed | Required (gated Llama 3.2-3B access) |
-| Disk space | ~50 MB | ~10 GB (model weights) |
+| Disk space | ~1.5 GB (dependencies + sample data) | ~10 GB (+ model weights) |
 
 ---
 
