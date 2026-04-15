@@ -7,7 +7,7 @@
 
 <p align="center">
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
-  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/Python-3.11+-blue.svg" alt="Python 3.11+"></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/Python-3.11--3.13-blue.svg" alt="Python 3.11–3.13"></a>
   <a href="https://huggingface.co/facebook/tribev2"><img src="https://img.shields.io/badge/%F0%9F%A4%97-TRIBE%20v2%20Weights-orange" alt="HuggingFace"></a>
   <a href="https://creativecommons.org/licenses/by-nc/4.0/"><img src="https://img.shields.io/badge/Model-CC--BY--NC--4.0-lightgrey.svg" alt="Model License"></a>
 </p>
@@ -48,7 +48,9 @@ Feed it two video ads (or any video stimuli), and the workbench will:
 
 ## Quick Start
 
-The fastest way to see the workbench in action — **no GPU, no model download, no inference required.**
+**No GPU required.** The demo runs entirely on pre-computed predictions — no model download, no inference.
+
+> **Note:** The install pulls the full dependency set (~1.2 GB) including PyTorch and the TRIBE v2 package. This is needed because the demo runs the same Gradio app as the full workbench. The install is heavier than usual, but you won't need a GPU to run it.
 
 ```bash
 git clone https://github.com/aniketmallick/tribe-v2-creative-workbench.git
@@ -61,7 +63,7 @@ pip install -r requirements.txt
 python demo.py
 ```
 
-`demo.py` loads pre-computed predictions from `sample_data/` and launches the full UI instantly.
+`demo.py` loads pre-computed predictions from `sample_data/` and launches the full Gradio UI instantly.
 
 ---
 
@@ -90,6 +92,21 @@ The exported zip drops directly into `sample_data/` to power the local workbench
 
 > **Heads up:** A ~52-second video takes roughly 30 minutes on a T4 GPU. Keep clips under 60 seconds for faster iteration.
 
+### Using your own Colab outputs locally
+
+After the notebook finishes, it downloads a `sample_data.zip`. To use it with the local workbench:
+
+```bash
+# Remove the bundled sample data
+rm -rf sample_data/
+
+# Extract your Colab outputs in its place
+unzip sample_data.zip
+
+# Launch the workbench with your data
+python demo.py
+```
+
 ---
 
 ## Full Usage
@@ -98,9 +115,9 @@ The exported zip drops directly into `sample_data/` to power the local workbench
 
 | Profile | File | What it includes |
 |---------|------|-----------------|
-| **Full** | `requirements.txt` | Everything — inference + visualization + app |
+| **Full (demo + app)** | `requirements.txt` | Everything — inference + visualization + Gradio app (~1.2 GB) |
 | **Inference only** | `requirements.inference.txt` | TRIBE v2, PyTorch, scientific stack |
-| **Visualization only** | `requirements.viz.txt` | nilearn, Plotly |
+| **Visualization only** | `requirements.viz.txt` | nilearn, Plotly (standalone `viz.py` CLI only — not sufficient for `demo.py` or `app.py`) |
 
 ### Demo mode (no GPU)
 
@@ -190,7 +207,7 @@ tribe-v2-creative-workbench/
 
 | Requirement | Demo mode | Full inference |
 |------------|-----------|---------------|
-| Python | 3.11+ | 3.11+ |
+| Python | 3.11 – 3.13 | 3.11 – 3.13 |
 | GPU | Not needed | CUDA-capable GPU recommended |
 | HuggingFace account | Not needed | Required (gated Llama 3.2-3B access) |
 | Disk space | ~50 MB | ~10 GB (model weights) |
