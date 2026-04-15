@@ -17,7 +17,6 @@ secrets.toml
 
 # Jupyter
 .ipynb_checkpoints/
-/tribe_demo.ipynb
 /TRIBE v2 Comparison Workbench*Codex*.md
 
 # Local caches and outputs
@@ -33,6 +32,9 @@ models/
 *.pth
 *.safetensors
 *.bin
+
+# Bundled zip (individual files are tracked instead)
+sample_data.zip
 
 # Demo/generated scratch dirs (keep sample_data/*.npy trackable)
 sample_data/generated/
