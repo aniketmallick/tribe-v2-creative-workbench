@@ -193,8 +193,6 @@ tribe-v2-creative-workbench/
 │   ├── timing_a.json       #   Timing metadata for Video A
 │   └── timing_b.json       #   Timing metadata for Video B
 ├── tests/                  # pytest test suite
-├── scripts/
-│   └── verify_gpu.py       # GPU availability check
 ├── requirements.txt        # Full dependency set
 ├── requirements.inference.txt
 ├── requirements.viz.txt
